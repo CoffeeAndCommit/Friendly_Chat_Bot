@@ -248,15 +248,6 @@ Memory System	4 days
 Frontend Beautiful UI	6 days
 Deployment + Testing	2 days
 Total	~17 days
-💰 Estimated Development Cost
-Assuming typical freelance rate:
-
-₹80,000 – ₹1,40,000 INR
-(Depending on UI polish + depth of memory)
-
-If using OpenAI API (paid):
-
-₹5–₹30/day depending on traffic
 
 📌 Any Doubts I Need to Clarify?
 I need 4 things from you:
@@ -268,10 +259,3 @@ I need 4 things from you:
 
 Tell me, and I will finalize the architecture + give you full code boilerplate.
 
-
-
-
-
-
-No file chosenNo file chosen
-ChatGPT can make mistakes. Check important info. See Cookie Preferences.
