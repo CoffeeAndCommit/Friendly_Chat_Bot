@@ -1,7 +1,5 @@
 # Friendly_Chat_Bot
-git init
 
-ChatGPT said:
 Below is your full architecture + tech stack + implementation steps + cost/time estimate for building an AI “best-friend” chatbot with:
 
 ✔ Django backend
