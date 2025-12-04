@@ -1,13 +1,13 @@
+
 from django.db import models
-from django.contrib.auth import get_user_model
-from django.utils import timezone
-import json
+from django.conf import settings  # <- use this instead of get_user_model
 
 class UserMemory(models.Model):
     """
     Stores important facts and user-level metadata.
     """
-    user = models.OneToOneField(User, on_delete=models.CASCADE, null=True, blank=True)
+    # Use settings.AUTH_USER_MODEL directly
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
     external_id = models.CharField(max_length=128, null=True, blank=True, unique=True)
     facts = models.JSONField(default=dict)  # key->value for persistent facts
     created_at = models.DateTimeField(auto_now_add=True)
