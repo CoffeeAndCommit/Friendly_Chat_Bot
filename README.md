@@ -1,111 +1,81 @@
-+----------------------------------------------------------+
-|                       VUE FRONTEND                       |
-|  - Modern Chat UI                                         |
-|  - WebSocket Client (text + voice)                       |
-|  - Audio recorder + playback                             |
-|  - Streaming message renderer                             |
-|  - Pinia for state mgmt                                   |
-+---------------------------▲------------------------------+
-                            |   WebSocket (Text/Voice)
-                            |   REST for auth/memory fetch
-+---------------------------▼------------------------------+
-|                        DJANGO BACKEND                    |
-|  Django REST Framework + Channels + Redis                |
-|                                                          |
-|  Endpoints:                                              |
-|    /api/auth/                                            |
-|    /api/user/                                            |
-|    /api/memory/                                          |
-|                                                          |
-|  WS:                                                     |
-|    /ws/chat/<user_id>/                                   |
-|                                                          |
-|  Memory Engine:                                          |
-|    - Long-term memory store                              |
-|    - Important facts engine                              |
-|    - Sentiment history                                   |
-|    - Conversation summarizer                             |
-+---------------------------▲------------------------------+
-                            |
-                            | OPENAI API (Realtime WS)
-+---------------------------▼------------------------------+
-|                       OpenAI Backend                     |
-|   Models: GPT-4.1 / GPT-5.1 (depending on tone/style)    |
-|   Features Used:                                          |
-|     - Streaming tokens                                    |
-|     - Audio input (voice mode)                            |
-|     - Audio output (speech mode)                          |
-|     - Personality-driven system prompt                    |
-|                                                          |
-+----------------------------------------------------------+
+# Friendly_Chat_Bot
 
+Below is your full architecture + tech stack + implementation steps + cost/time estimate for building an AI “best-friend” chatbot with:
 
+✔ Django backend
+✔ WebSocket real-time chat
+✔ Long-term memory
+✔ Caring best-friend personality
+✔ Modern JS frontend (React recommended)
 
-⭐ COMPONENT BREAKDOWN
-🎯 1. Frontend (Vue.js)
-Tech stack
+✅ 1. High-Level Architecture
+             ┌─────────────────────────────────────┐
+             │       FRONTEND (React + WS)         │
+             │ - Modern chat UI                    │
+             │ - WebSocket connection               │
+             │ - Streams messages in real-time     │
+             └───────────────▲─────────────────────┘
+                             │ WS
+                             │
+             ┌───────────────▼─────────────────────┐
+             │          DJANGO BACKEND              │
+             │  Django + Django REST + Channels     │
+             │                                       │
+             │ Endpoints:                            │
+             │  /api/send-message/                   │
+             │  /api/user-profile/                   │
+             │ WebSocket server via Channels         │
+             │ Memory DB storing:                    │
+             │   - User name                         │
+             │   - Preferences                        │
+             │   - Past conversations summary        │
+             └───────────────▲──────────────────────┘
+                             │
+                             │ REST/WS API
+             ┌───────────────▼──────────────────────┐
+             │            OPENAI API                 │
+             │  - Realtime API (WS) OR /chat/completions │
+             │  - System prompt customizing personality │
+             │  - Model: GPT-4.1/4.1-mini or GPT-5.1  │
+             └───────────────────────────────────────┘
+✅ 2. Detailed Features Breakdown
+✔ Best-Friend Personality
+Personality enforced by system prompt:
 
-Vue 3 (Composition API)
+Warm, empathetic
 
-Vite
+Remembers user
 
-TailwindCSS
+Emotional intelligence
 
-Pinia (state management)
+Supportive tone
 
-WebSocket client
+✔ Long-term Memory
+You will store:
 
-Audio recording API (for voice)
-Waveform visualizer (optional)
+User name
 
+Likes/dislikes
 
+Mood patterns
 
-src/
-│
-├── components/
-│   ├── ChatWindow.vue
-│   ├── ChatBubble.vue
-│   ├── TypingIndicator.vue
-│   ├── AudioRecorder.vue
-│   ├── VoiceVisualizer.vue
-│
-├── store/
-│   ├── chat.js          (messages, streaming updates)
-│   ├── user.js
-│
-├── services/
-│   ├── ws.js            (WebSocket wrapper)
-│   ├── api.js           (REST API wrapper)
-│
-├── views/
-│   ├── ChatView.vue
-│   ├── Onboarding.vue
-│
-└── App.vue
+Previous conversation summaries
 
+Tech options:
 
-Key Frontend Features
-✔ Real-time streaming UI
+Type of Memory	Storage
+User profile	PostgreSQL
+Long-term memory	Summarized and stored per user
+Vector memory (optional)	pgvector
+✔ Real-time Streaming
+Two streaming layers possible:
 
-Characters appear as they come from WebSocket.
+Django Channels → Frontend
 
-✔ Voice Input
+OpenAI Realtime API → Backend
 
-User records → audio blob → WebSocket → Django → OpenAI realtime.
-
-✔ Voice Output
-
-Receive audio chunks → play progressively (smooth speech).
-
-✔ Memory-aware Frontend UX
-
-“Good morning Medhavi ❤️”
-
-“Last time you mentioned feeling stressed, how are you today?”
-
-🖥 2. Backend (Django + Channels) — Finalized Design
-Tech Required
-
+✅ 3. Backend (Django) Deep Architecture
+A. Components Required
 Django
 
 Django REST Framework
