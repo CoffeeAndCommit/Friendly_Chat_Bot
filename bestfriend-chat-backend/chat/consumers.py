@@ -1,178 +1,176 @@
+# chat/consumers.py
 import json
+import asyncio
 from channels.generic.websocket import AsyncWebsocketConsumer
-from .utils_openai import get_openai_client
+from asgiref.sync import sync_to_async
+
+from .utils_openai import get_openai_client, extract_text_from_response
+from memory.services import (
+    get_recent_messages_as_list,
+    append_message_to_memory,
+    summarize_memory_async,
+    analyze_message_async,
+)
+
+# SYSTEM_INSTRUCTIONS = (
+#     "You are an assistant that has access to a short summary of the user's past conversations. "
+#     "Use it to personalize replies when relevant. Be concise and friendly."
+# )
+
+SYSTEM_INSTRUCTIONS = (
+    "You are AIRA, a warm, personal AI assistant.\n"
+    "- The 'Long-term memory summary' contains facts about the user (name, preferences, background).\n"
+    "- Gently use those facts to make answers feel personal (e.g., greeting by name, referencing hobbies), "
+    "but only if they are clearly relevant.\n"
+    "- Never claim to remember something that is not in the summary or current chat.\n"
+    "- If the user corrects something, treat the correction as the most up-to-date information.\n"
+    "- Keep your answers short and practical unless the user asks for depth.\n"
+)
+
+
 
 class ChatConsumer(AsyncWebsocketConsumer):
 
     async def connect(self):
         print("[WS] New WebSocket connection")
+
+        # Django user (from AuthMiddlewareStack)
+        user = self.scope["user"]
+        self.user = user
+
+        # user_id from URL path: ws/chat/<str:user_id>/
+        path_user_id = None
+        try:
+            path_user_id = self.scope.get("url_route", {}).get("kwargs", {}).get("user_id")
+        except Exception:
+            path_user_id = None
+
+        # Decide external_id for memory system
+        if user and getattr(user, "is_authenticated", False):
+            self.external_id = f"user:{user.pk}"
+        elif path_user_id:
+            self.external_id = f"path:{path_user_id}"
+        else:
+            self.external_id = f"anon:{self.channel_name}"
+
         await self.accept()
-        print("[WS] Connection accepted")
+        print("[WS] Connection accepted, external_id =", self.external_id)
+
     async def receive(self, text_data):
         print("======== [WS RECEIVE] ==========")
         print("[RAW DATA]:", text_data)
 
-        data = json.loads(text_data)
-        user_msg = data.get("message", "")
-        
+        # 1) USER SENDS A MESSAGE  ---------------------------
+        try:
+            data = json.loads(text_data)
+        except Exception:
+            await self.send(json.dumps({
+                "type": "error",
+                "message": "Invalid JSON payload",
+            }))
+            return
+
+        user_msg = (data.get("message") or "").trim() if hasattr(str, "trim") else (data.get("message") or "").strip()
         print("[USER MSG]:", user_msg)
 
         if not user_msg:
             print("[ERROR] Empty message!")
             await self.send(json.dumps({
                 "type": "error",
-                "message": "Message cannot be empty"
+                "message": "Message cannot be empty",
             }))
             return
 
+        # 2) LOOK IN DATABASE: summary + recent messages -----
+        summary_text = await sync_to_async(self._get_summary_text)()
+        print("[MEMORY] Loaded summary:", summary_text)
+
+        recent_messages = await get_recent_messages_as_list(self.external_id, limit=25)
+        print("[MEMORY] Loaded recent messages:", recent_messages)
+
+        # 3) USE MEMORY + NEW MESSAGE TO BUILD PROMPT --------
+        prompt_parts = [SYSTEM_INSTRUCTIONS]
+
+        if summary_text:
+            prompt_parts.append(f"Long-term memory summary:\n{summary_text}")
+
+        if recent_messages:
+            last_msgs = recent_messages[-10:]
+            history_lines = "\n".join(f"{m['role']}: {m['content']}" for m in last_msgs)
+            prompt_parts.append(f"Recent chat history:\n{history_lines}")
+
+        prompt_parts.append(f"User: {user_msg}")
+        prompt_parts.append("Assistant:")
+
+        full_prompt = "\n\n".join(prompt_parts)
+        print("[DEBUG] Final prompt sent to OpenAI:\n", full_prompt)
+
+        # Call OpenAI in a thread (non-blocking for event loop)
         try:
             client = get_openai_client()
             print("[DEBUG] OpenAI client created")
 
-            print("[DEBUG] Sending request to OpenAI →", user_msg)
-     
-            # ---- FIXED: Use input_text instead of input ----
-            response = client.responses.create(
-                model="gpt-5-nano",
-                # input_text=user_msg
-                input=user_msg
-            )
+            def _call_openai():
+                return client.responses.create(
+                    model="gpt-5-nano",
+                    input= full_prompt,
+                )
+
+            response = await asyncio.to_thread(_call_openai)
             print("[DEBUG] Raw OpenAI response:", response)
 
-            ai_text = response.output_text
-            print("[DEBUG] Extracted output_text:", ai_text)
+            ai_text = extract_text_from_response(response)
+            print("[DEBUG] Extracted AI text:", ai_text)
 
-            await self.send(json.dumps({
-                "type": "message",
-                "message": ai_text
-            }))
-            print("[WS] Sent AI response")
         except Exception as e:
             print("********** [OPENAI ERROR] **********")
             print(str(e))
             print("************************************")
-
             await self.send(json.dumps({
                 "type": "error",
-                "message": f"Error: {str(e)}"
+                "message": f"Error talking to AI: {str(e)}",
             }))
+            return
+
+        # 4) CHATBOT REPLIES TO THE USER ---------------------
+        await self.send(json.dumps({
+            "type": "message",    # your frontend treats this as final assistant message
+            "message": ai_text,
+        }))
+        print("[WS] Sent AI response")
+
+        # SAVE MESSAGES TO DB (so they become part of memory)
+        try:
+            await append_message_to_memory(self.external_id, "user", user_msg)
+            await append_message_to_memory(self.external_id, "assistant", ai_text)
+        except Exception as e:
+            print("[DB SAVE ERROR]", str(e))
+
+        # BACKGROUND: analyze + update summary (for next time)
+        try:
+            asyncio.create_task(analyze_message_async(self.external_id, user_msg))
+            asyncio.create_task(summarize_memory_async(self.external_id))
+        except Exception as e:
+            print("[BACKGROUND TASK ERROR]", str(e))
+
+    
+   
 
 
-# import json
-# import asyncio
-# from channels.generic.websocket import AsyncWebsocketConsumer
-# from memory.services import (
-#     get_or_create_user_memory,
-#     append_message_to_memory,
-#     summarize_memory_async,
-#     analyze_message_async,
-# )
-# from .utils_openai import stream_openai_response
+    def _get_summary_text(self):
+        """
+        Sync helper to fetch ConversationSummary.summary_text for this external_id.
+        Import models inside to avoid AppRegistryNotReady at import time.
+        """
+        try:
+            from memory.models import UserMemory, ConversationSummary
+            um = UserMemory.objects.filter(external_id=self.external_id).first()
+            if not um:
+                return ""
+            cs = ConversationSummary.objects.filter(user_memory=um).first()
+            return cs.summary_text if cs else ""
+        except Exception as e:
+            print("[SUMMARY READ ERROR]", str(e))
+            return ""
 
-# class ChatConsumer(AsyncWebsocketConsumer):
-#     """
-#     Websocket consumer that streams OpenAI responses AND integrates
-#     memory (DB) + summarization + sentiment/topic analysis.
-#     """
-#     async def connect(self):
-#         # Accept connection
-#         await self.accept()
-#         # Identify user: prefer URL kwarg user_id if provided; fallback to client IP:port
-#         self.external_id = self.scope.get("url_route", {}).get("kwargs", {}).get("user_id")
-#         if not self.external_id:
-#             # fallback to client host:port (not persistent across reconnects but ok for dev)
-#             host, port = self.scope.get("client", ("anon", 0))
-#             self.external_id = f"{host}-{port}"
-#         # ensure memory exists
-#         await asyncio.to_thread(get_or_create_user_memory, self.external_id)
-#         # Optionally: send a welcome message using memory summary
-#         await self.send(json.dumps({"type": "system", "message": "Connected to Chat backend."}))
-
-#     async def disconnect(self, close_code):
-#         # nothing special (DB persisted)
-#         pass
-
-#     async def receive(self, text_data):
-#         """
-#         Expect JSON: {"type": "message", "message": "..."}
-#         """
-#         try:
-#             payload = json.loads(text_data)
-#         except Exception:
-#             await self.send(json.dumps({"type": "error", "message": "Invalid JSON"}))
-#             return
-
-#         msg_type = payload.get("type", "message")
-#         if msg_type != "message":
-#             await self.send(json.dumps({"type": "error", "message": "Unsupported payload type"}))
-#             return
-
-#         user_text = payload.get("message", "").strip()
-#         if not user_text:
-#             await self.send(json.dumps({"type": "error", "message": "Empty message"}))
-#             return
-
-#         # 1) Save user message to DB (raw)
-#         await asyncio.to_thread(append_message_to_memory, self.external_id, "user", user_text)
-
-#         # 2) Run quick analysis (sentiment/topics) in background
-#         analysis_task = asyncio.create_task(analyze_message_async(self.external_id, user_text))
-
-#         # 3) Stream AI response (stream_openai_response will call send_chunk_callback)
-#         async def send_chunk(chunk_obj):
-#             """
-#             chunk_obj is dict, e.g. {"type": "stream", "delta": "..."} or {"type":"final", "text":"..."}
-#             We'll forward it to frontend as JSON strings.
-#             """
-#             try:
-#                 await self.send(json.dumps(chunk_obj))
-#             except Exception:
-#                 # ignore send failures for single chunks
-#                 pass
-
-#         # Call the streaming function (which internally uses OpenAI)
-#         try:
-#             await stream_openai_response(self.external_id, user_text, send_chunk)
-#         except Exception as e:
-#             await self.send(json.dumps({"type": "error", "message": f"OpenAI stream error: {str(e)}"}))
-#             return
-
-#         # 4) After streaming completes: gather analysis and save assistant reply to memory
-#         # For simplicity, assume the final assistant text arrives as a "final" message earlier in stream.
-#         # If not, you might implement a mechanism to collect deltas into final_text.
-#         # Here we'll ask the model to produce final_text again for reliability (cheap call), or you can store assembled deltas in consumer state.
-
-#         # Option A: If you kept a buffer of deltas, use it.
-#         # Option B: Make a short call to reconstruct final assistant message (simple).
-#         # We'll go with Option B for clarity.
-
-#         # reconstruct final message by asking model to "rewrite your last reply" is wasteful.
-#         # Instead, rely on the OpenAI streaming code to have sent a {"type":"final","text": ...} chunk earlier.
-#         # We'll try to read that final text from the client memory (if stored). For now, we simply store a placeholder.
-#         assistant_text = payload.get("_assistant_final_text") or "Assistant reply (final saved)."
-
-#         await asyncio.to_thread(append_message_to_memory, self.external_id, "assistant", assistant_text)
-
-#         # 5) When enough new messages exist, trigger summarization job (async)
-#         try:
-#             # run summarization in background
-#             asyncio.create_task(summarize_memory_async(self.external_id))
-#         except Exception:
-#             pass
-
-#         # 6) If analysis_task finished, attach metadata to last user message
-#         if not analysis_task.done():
-#             # wait briefly but do not block indefinitely
-#             try:
-#                 analysis = await asyncio.wait_for(analysis_task, timeout=4.0)
-#             except Exception:
-#                 analysis = None
-#         else:
-#             analysis = analysis_task.result()
-
-#         if analysis:
-#             # attach analysis metadata to the last user message
-#             # This is a simple approach — in production attach by Message id
-#             # For brevity, we won't attempt to update a specific DB row here.
-#             await self.send(json.dumps({"type": "analysis", "value": analysis}))
 

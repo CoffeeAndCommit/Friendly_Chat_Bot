@@ -1,6 +1,6 @@
 <template>
   <div class="typing-wrap">
-    <div class="dot" v-for="n in dots" :key="n"></div>
+   <div class="dot" v-for="n in 3" :key="n"></div>
   </div>
 </template>
 
@@ -14,26 +14,7 @@ export default {
   data() {
     return { dots: 0, intervalId: null };
   },
-  watch: {
-    active(newVal) {
-      if (newVal) this.startDots();
-      else this.stopDots();
-    }
-  },
-  methods: {
-    startDots() {
-      this.intervalId = setInterval(() => {
-        this.dots = (this.dots + 1) % 4;
-      }, 500);
-    },
-    stopDots() {
-      clearInterval(this.intervalId);
-      this.dots = 0;
-    }
-  },
-  unmounted() {
-    this.stopDots();
-  }
+
 }
 </script>
 
