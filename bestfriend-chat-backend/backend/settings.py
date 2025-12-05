@@ -35,7 +35,9 @@ SECRET_KEY = 'django-insecure-lu7+q((=)=rp2lmv0d(i_2(7*4*d*ng&@zhx%7m(&h0d&+x1f)
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["localhost", "127.0.0.1", ".onrender.com", ".railway.app", ".vercel.app", 'deploy-preview-6--aquamarine-cheesecake-cd4b03.netlify.app']
+# Add your real domain later
+
 
 
 # Application definition
@@ -73,6 +75,8 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
+    "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
 
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
