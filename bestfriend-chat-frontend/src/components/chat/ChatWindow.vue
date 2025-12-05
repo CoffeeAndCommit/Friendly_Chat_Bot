@@ -63,8 +63,10 @@ export default {
   methods: {
     connectWebSocket() {
       const wsUrl = `ws://localhost:8000/ws/chat/123/`
+      console.log("Connecting to WebSocket:", wsUrl)
       this.ws = new WebSocket(wsUrl)
       this.ws.onopen = () => console.log("WebSocket connected")
+      
       this.ws.onmessage = (event) => {
         const data = JSON.parse(event.data)
         

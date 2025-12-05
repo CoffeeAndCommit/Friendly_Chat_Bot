@@ -13,11 +13,7 @@ django.setup()
 
 application = ProtocolTypeRouter({
     "http": get_asgi_application(),
-    #  "websocket": JWTAuthMiddleware(
-    #     URLRouter(websocket_urlpatterns)
-    # )
-
-    # this is earlier to jwt auth
+   
     "websocket": AuthMiddlewareStack(
         URLRouter(
             api_routing.websocket_urlpatterns

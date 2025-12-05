@@ -66,7 +66,7 @@ INSTALLED_APPS = [
     'api',
     'chat',
     'memory',
-    'users',
+    # 'users',
 
 ]
 

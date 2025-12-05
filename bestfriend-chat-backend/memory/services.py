@@ -3,59 +3,112 @@ import os
 import asyncio
 from django.utils import timezone
 from openai import OpenAI
+from chat.utils_openai import extract_text_from_response
+
 
 # Configuration
-SUMMARIZE_AFTER_MESSAGES = 25     # summarize after this many messages
-MAX_RAW_MESSAGES_KEEP = 200       # prune older messages
+SUMMARIZE_AFTER_MESSAGES = int(os.getenv("SUMMARIZE_AFTER_MESSAGES", "25"))
+MAX_RAW_MESSAGES_KEEP = int(os.getenv("MAX_RAW_MESSAGES_KEEP", "200"))
+MEMORY_MODEL = os.getenv("MEMORY_MODEL", "gpt-5-nano")
+ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "gpt-5-nano")
+
 
 def get_client():
-    """Create OpenAI client."""
-    return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    """Create OpenAI client (blocking)."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not set")
+    return OpenAI(api_key=api_key)
 
-def get_or_create_user_memory(external_id):
-    """Get or create UserMemory by external_id."""
-    # import models inside function to avoid AppRegistryNotReady at startup
+
+# -------------------------
+# Synchronous DB helpers
+# -------------------------'
+
+
+    """
+    Safely extract assistant text from a Responses API response.
+
+    Looks for the first output item of type 'message', then returns
+    its first content.text. Falls back to string(resp) if needed.
+    """
+    try:
+        # New Responses API: resp.output is a list of items
+        # We want the one with type == "message"
+        for item in getattr(resp, "output", []) or []:
+            if getattr(item, "type", None) == "message":
+                content_list = getattr(item, "content", []) or []
+                if content_list and hasattr(content_list[0], "text"):
+                    return content_list[0].text
+
+        # Fallback: try the last output item
+        if getattr(resp, "output", None):
+            last = resp.output[-1]
+            content_list = getattr(last, "content", []) or []
+            if content_list and hasattr(content_list[0], "text"):
+                return content_list[0].text
+    except Exception:
+        pass
+
+    # Last resort: stringified response
+    return str(resp)
+
+def get_or_create_user_memory_sync(external_id):
     from .models import UserMemory
     um, _ = UserMemory.objects.get_or_create(external_id=external_id)
     return um
 
-def append_message_to_memory(external_id, role, content, metadata=None):
-    """Append a chat message to user's memory."""
+
+def append_message_to_memory_sync(external_id, role, content, metadata=None):
+    """
+    Create a ConversationMessage and prune old ones.
+    """
     from .models import ConversationMessage
-    um = get_or_create_user_memory(external_id)
+    um = get_or_create_user_memory_sync(external_id)
+
     msg = ConversationMessage.objects.create(
         user_memory=um,
         role=role,
         content=content,
-        metadata=metadata or {}
+        metadata=metadata or {},
     )
 
-    # prune old messages
-    msgs = ConversationMessage.objects.filter(user_memory=um).order_by('-created_at')
-    if msgs.count() > MAX_RAW_MESSAGES_KEEP:
-        to_delete = msgs[MAX_RAW_MESSAGES_KEEP:]
+    # prune older messages, keep newest MAX_RAW_MESSAGES_KEEP
+    qs = ConversationMessage.objects.filter(user_memory=um).order_by('-created_at')
+    if qs.count() > MAX_RAW_MESSAGES_KEEP:
+        to_delete = qs[MAX_RAW_MESSAGES_KEEP:]
         ConversationMessage.objects.filter(id__in=[m.id for m in to_delete]).delete()
+
     return msg
 
-def get_recent_messages_as_list(external_id, limit=50):
-    """Return recent messages as list of dicts."""
+
+def get_recent_messages_as_list_sync(external_id, limit=50):
+    """
+    Return list of dicts:
+      [{"role": "...", "content": "..."}, ...]
+    ordered from oldest to newest, limited to last `limit`.
+    """
     from .models import ConversationMessage
-    um = get_or_create_user_memory(external_id)
+    um = get_or_create_user_memory_sync(external_id)
     qs = ConversationMessage.objects.filter(user_memory=um).order_by('created_at')
-    qs = qs[(0 if qs.count() < limit else qs.count() - limit):]
+    total = qs.count()
+    if total > limit:
+        qs = qs[total - limit:]
     return [{"role": m.role, "content": m.content} for m in qs]
 
-async def summarize_memory_async(external_id):
-    """Asynchronously summarize user's recent conversation."""
-    return await asyncio.to_thread(_summarize_memory_sync, external_id)
 
 def _summarize_memory_sync(external_id):
-    from .models import UserMemory, ConversationMessage, ConversationSummary
+    """
+    Read recent messages, summarize with OpenAI,
+    store in ConversationSummary + UserMemory.facts.
+    """
+    from .models import ConversationMessage, ConversationSummary
 
-    um = get_or_create_user_memory(external_id)
+    um = get_or_create_user_memory_sync(external_id)
+
     messages = ConversationMessage.objects.filter(user_memory=um).order_by('-created_at')[:SUMMARIZE_AFTER_MESSAGES]
     messages = list(reversed(messages))
-    raw_text = "\n".join([f"{m.role}: {m.content}" for m in messages])
+    raw_text = "\n".join(f"{m.role}: {m.content}" for m in messages)
 
     prompt = (
         "Summarize the user's recent conversation into short bullet points suitable for long-term memory.\n\n"
@@ -66,33 +119,42 @@ def _summarize_memory_sync(external_id):
 
     client = get_client()
     resp = client.responses.create(
-        model=os.getenv("MEMORY_MODEL", "gpt-5-nano"),
+        model=MEMORY_MODEL,
+        # input_text=prompt,
         input=prompt,
     )
-    summary_text = getattr(resp, "output_text", None) or str(resp)
 
-    # Save into ConversationSummary
+    # extract summary text
+    try:
+        # summary_text = resp.output[0].content[0].text
+        summary_text = extract_text_from_response(resp)
+    except Exception:
+        summary_text = str(resp)
+
     cs, _ = ConversationSummary.objects.get_or_create(user_memory=um)
     cs.summary_text = summary_text
     cs.last_updated = timezone.now()
     cs.save()
 
-    # Parse JSON safely and update UserMemory.facts
+    # merge into facts
     try:
         import json
         parsed = json.loads(summary_text)
-        um.facts.update(parsed if isinstance(parsed, dict) else {"summary": summary_text})
+        if isinstance(parsed, dict):
+            um.facts.update(parsed)
+        else:
+            um.facts.update({"summary": summary_text})
     except Exception:
         um.facts.update({"summary": summary_text})
     um.save()
+
     return cs
 
-async def analyze_message_async(external_id, text):
-    """Analyze sentiment and topics asynchronously."""
-    return await asyncio.to_thread(_analyze_message_sync, external_id, text)
 
 def _analyze_message_sync(external_id, text):
-    client = get_client()
+    """
+    Analyze sentiment/topics of a message. Returns a dict.
+    """
     prompt = (
         "Perform a short analysis of the following user message. Return a JSON object with fields:\n"
         "  - sentiment: one of {positive, neutral, negative}\n"
@@ -100,18 +162,43 @@ def _analyze_message_sync(external_id, text):
         "  - topics: array of short topic labels\n\n"
         f"Message: '''{text}'''"
     )
+
+    client = get_client()
     resp = client.responses.create(
-        model=os.getenv("ANALYSIS_MODEL", "gpt-5-nano"),
-        input=prompt
+        model=ANALYSIS_MODEL,
+        # input_text=prompt,
+        input=prompt,
     )
-    out = getattr(resp, "output_text", None) or str(resp)
+
+    try:
+        # out = resp.output[0].content[0].text
+        out = extract_text_from_response(resp)
+    except Exception:
+        out = str(resp)
+
     try:
         import json
         parsed = json.loads(out)
         return parsed
     except Exception:
-        # fallback
         return {"sentiment": "neutral", "sentiment_score": 0.0, "topics": []}
 
 
+# -------------------------
+# Async wrappers for use in async consumer
+# -------------------------
 
+async def append_message_to_memory(external_id, role, content, metadata=None):
+    return await asyncio.to_thread(append_message_to_memory_sync, external_id, role, content, metadata)
+
+
+async def get_recent_messages_as_list(external_id, limit=50):
+    return await asyncio.to_thread(get_recent_messages_as_list_sync, external_id, limit)
+
+
+async def summarize_memory_async(external_id):
+    return await asyncio.to_thread(_summarize_memory_sync, external_id)
+
+
+async def analyze_message_async(external_id, text):
+    return await asyncio.to_thread(_analyze_message_sync, external_id, text)
