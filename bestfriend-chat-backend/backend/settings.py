@@ -122,6 +122,7 @@ ASGI_APPLICATION = "backend.asgi.application"
 DEBUG = os.getenv("DEBUG", "False") == "True"
 
 if DEBUG:
+    print("Running in DEBUG mode, using Redis for channel layers")
     CHANNEL_LAYERS = {
         "default": {
             "BACKEND": "channels_redis.core.RedisChannelLayer",
@@ -131,6 +132,7 @@ if DEBUG:
         }
     }
 else:
+    print("Running in PRODUCTION mode, using InMemoryChannelLayer")
     # On Render: no Redis, use in-memory layer
     CHANNEL_LAYERS = {
         "default": {
